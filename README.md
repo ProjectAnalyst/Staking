@@ -18,14 +18,20 @@ npm install
 ```
 
 2. Create a `.env` file in the root directory with the following variables:
-```
-SEPOLIA_RPC_URL=your_sepolia_rpc_url
-PRIVATE_KEY=your_private_key
-ETHERSCAN_API_KEY=your_etherscan_api_key
-TOKEN_ADDRESS=your_mini_token_address
-TREASURY_WALLET=your_treasury_wallet_address
-NEXT_PUBLIC_STAKING_CONTRACT_ADDRESS=your_deployed_staking_contract_address
-NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=your_walletconnect_project_id
+```bash
+# Contract Addresses
+NEXT_PUBLIC_STAKING_CONTRACT_ADDRESS=
+NEXT_PUBLIC_MINI_TOKEN_ADDRESS=
+
+# Wallet Configuration
+TREASURY_WALLET=
+
+# Network Configuration
+SEPOLIA_RPC_URL=
+PRIVATE_KEY=
+
+# WalletConnect Configuration
+NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
 ```
 
 3. Deploy the contract to Sepolia:
@@ -48,6 +54,42 @@ The staking contract supports:
 
 ## Testing
 
+### Smart Contract Tests
+
+The contract has been thoroughly tested with the following test cases:
+
+#### Deployment Tests
+- ✓ Correct deployment
+- ✓ Token address set correctly
+- ✓ Treasury wallet set correctly
+- ✓ Initial unpaused state
+
+#### Staking Tests
+- ✓ Users can stake tokens
+- ✓ Cannot stake 0 tokens
+- ✓ Cannot stake when contract is paused
+- ✓ Cannot stake with invalid lock period
+
+#### Withdrawal Tests
+- ✓ Users can withdraw after lock period
+- ✓ Cannot withdraw before lock period ends
+- ✓ Cannot withdraw inactive stakes
+
+#### Emergency Withdrawal Tests
+- ✓ Users can emergency withdraw with penalty
+- ✓ Cannot emergency withdraw inactive stakes
+
+#### Pause/Unpause Tests
+- ✓ Owner can pause/unpause contract
+- ✓ Non-owners cannot pause
+- ✓ Cannot unpause when not paused
+
+#### Treasury Management Tests
+- ✓ Owner can change treasury wallet
+- ✓ Non-owners cannot change treasury
+- ✓ Cannot set zero address as treasury
+
+### Frontend Testing
 1. Connect your wallet using RainbowKit
 2. Stake MINI tokens with different lock periods
 3. Wait for the lock period to expire
