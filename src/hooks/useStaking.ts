@@ -1,11 +1,11 @@
-import { useAccount, useContractRead, useContractWrite, usePrepareContractWrite, useContractEvent } from 'wagmi';
+import { useAccount, useContractRead, useContractWrite, usePrepareContractWrite, useContractEvent, usePublicClient } from 'wagmi';
 import { stakingABI } from '../abi/stakingABI';
 import { miniTokenABI } from '../abi/miniTokenABI';
 import { useState, useEffect, useRef } from 'react';
 import { formatEther } from 'ethers';
 
-const STAKING_CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_STAKING_CONTRACT_ADDRESS;
-const MINI_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_MINI_TOKEN_ADDRESS;
+const STAKING_CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_STAKING_CONTRACT_ADDRESS as `0x${string}`;
+const MINI_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_MINI_TOKEN_ADDRESS as `0x${string}`;
 
 if (!STAKING_CONTRACT_ADDRESS || !MINI_TOKEN_ADDRESS) {
   throw new Error('Missing required environment variables');
@@ -16,10 +16,21 @@ interface UseStakingProps {
   lockPeriod?: string;
 }
 
+interface Stake {
+  amount: bigint;
+  startTime: number;
+  endTime: number;
+  lockPeriod: number;
+  rewardMultiplier: bigint;
+  active: boolean;
+}
+
 export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
   const { address } = useAccount();
+  const publicClient = usePublicClient();
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txStatus, setTxStatus] = useState<'idle' | 'pending' | 'success' | 'error'>('idle');
+  const [isTransactionPending, setIsTransactionPending] = useState(false);
   const withdrawIndexRef = useRef<number | null>(null);
   const emergencyWithdrawIndexRef = useRef<number | null>(null);
   const [withdrawingIndex, setWithdrawingIndex] = useState<number | null>(null);
@@ -40,15 +51,37 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
   const lockPeriodNum = lockPeriod ? Number(lockPeriod) : undefined;
   if (lockPeriodNum !== undefined && (lockPeriodNum < 0 || lockPeriodNum > 2)) {
     console.error('Invalid lock period:', lockPeriodNum);
-    return;
+    return {
+      tokenBalance: undefined,
+      userStakes: undefined,
+      totalStaked: BigInt(0),
+      allowance: BigInt(0),
+      approveTokens: async () => {},
+      stakeTokens: async () => {},
+      withdrawStake: async () => {},
+      emergencyWithdrawStake: async () => {},
+      calculateStakeTotal: () => ({ originalAmount: 0, rewardAmount: 0, totalAmount: 0 }),
+      checkContractBalance: () => null,
+      isApproving: false,
+      isStaking: false,
+      isWithdrawing: false,
+      isEmergencyWithdrawing: false,
+      withdrawingIndex: null,
+      emergencyWithdrawingIndex: null,
+      txHash: null,
+      txStatus: 'idle',
+      isStakeReadyForWithdrawal: () => false,
+      getStakeStatus: () => 'Unknown',
+      getStakeReward: () => BigInt(0),
+    };
   }
 
   // Read user's token balance
   const { data: tokenBalance, refetch: refetchTokenBalance } = useContractRead({
-    address: MINI_TOKEN_ADDRESS as `0x${string}`,
+    address: MINI_TOKEN_ADDRESS,
     abi: miniTokenABI,
     functionName: 'balanceOf',
-    args: [address],
+    args: [address || '0x0000000000000000000000000000000000000000' as `0x${string}`],
     watch: true,
     onSuccess: (data) => {
       // Only log on initial load or when balance changes
@@ -63,10 +96,10 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
 
   // Read user's stakes
   const { data: userStakes, refetch: refetchStakes } = useContractRead({
-    address: STAKING_CONTRACT_ADDRESS as `0x${string}`,
+    address: STAKING_CONTRACT_ADDRESS,
     abi: stakingABI,
     functionName: 'getUserStakingInfo',
-    args: [address],
+    args: [address || '0x0000000000000000000000000000000000000000' as `0x${string}`],
     watch: true,
     onSuccess: (data) => {
       // Only log on initial load or when stakes change
@@ -99,10 +132,10 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
 
   // Read current allowance
   const { data: allowance } = useContractRead({
-    address: MINI_TOKEN_ADDRESS as `0x${string}`,
+    address: MINI_TOKEN_ADDRESS,
     abi: miniTokenABI,
     functionName: 'allowance',
-    args: [address, STAKING_CONTRACT_ADDRESS as `0x${string}`],
+    args: [address || '0x0000000000000000000000000000000000000000' as `0x${string}`, STAKING_CONTRACT_ADDRESS],
     watch: true,
     onSuccess: (data) => {
       // Only log on initial load or when allowance changes
@@ -116,14 +149,17 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
   });
 
   // Calculate total staked amount
-  const totalStaked = userStakes?.reduce((acc, stake) => acc + stake.amount, BigInt(0)) || BigInt(0);
+  const totalStaked = userStakes?.reduce((acc, stake) => {
+    if (!stake.active) return acc;
+    return acc + stake.amount;
+  }, BigInt(0)) || BigInt(0);
 
   // Read contract's token balance with error handling
   const { data: contractTokenBalance, error: contractBalanceError } = useContractRead({
-    address: MINI_TOKEN_ADDRESS as `0x${string}`,
+    address: MINI_TOKEN_ADDRESS,
     abi: miniTokenABI,
     functionName: 'balanceOf',
-    args: [STAKING_CONTRACT_ADDRESS as `0x${string}`],
+    args: [STAKING_CONTRACT_ADDRESS],
     watch: true,
     onSuccess: (data) => {
       // Only log on initial load or when contract balance changes
@@ -141,10 +177,10 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
 
   // Prepare approve function with exact amount
   const { config: approveConfig } = usePrepareContractWrite({
-    address: MINI_TOKEN_ADDRESS as `0x${string}`,
+    address: MINI_TOKEN_ADDRESS,
     abi: miniTokenABI,
     functionName: 'approve',
-    args: [STAKING_CONTRACT_ADDRESS as `0x${string}`, amountInWei || BigInt(0)],
+    args: [STAKING_CONTRACT_ADDRESS, amountInWei || BigInt(0)],
     enabled: !!address && !!amountInWei && Number(amount) > 0,
   });
 
@@ -153,21 +189,33 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
     onSuccess: (data) => {
       console.log('Approve successful:', data);
       setTxHash(data.hash);
-      setTxStatus('success');
+      setIsTransactionPending(true);
+      // Wait for transaction confirmation
+      publicClient?.waitForTransactionReceipt({ hash: data.hash })
+        .then(() => {
+          setTxStatus('success');
+          setIsTransactionPending(false);
+        })
+        .catch((error: Error) => {
+          console.error('Transaction failed:', error);
+          setTxStatus('error');
+          setIsTransactionPending(false);
+        });
     },
     onError: (error) => {
       console.error('Approve error:', error);
       setTxStatus('error');
+      setIsTransactionPending(false);
     },
   });
 
   // Prepare stake function with user input
   const { config: stakeConfig } = usePrepareContractWrite({
-    address: STAKING_CONTRACT_ADDRESS as `0x${string}`,
+    address: STAKING_CONTRACT_ADDRESS,
     abi: stakingABI,
     functionName: 'stake',
-    args: [amountInWei || BigInt(0), lockPeriodNum !== undefined ? BigInt(lockPeriodNum) : BigInt(0)],
-    enabled: !!address && !!amountInWei && lockPeriodNum !== undefined && Number(amount) > 0 && allowance >= (amountInWei || BigInt(0)),
+    args: [amountInWei || BigInt(0), Number(lockPeriodNum || 0)],
+    enabled: !!address && !!amountInWei && lockPeriodNum !== undefined && Number(amount) > 0 && (allowance || BigInt(0)) >= (amountInWei || BigInt(0)),
     onError: (error) => {
       console.error('Stake preparation error:', error);
     },
@@ -178,19 +226,31 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
     onSuccess: (data) => {
       console.log('Stake successful:', data);
       setTxHash(data.hash);
-      setTxStatus('success');
-      refetchStakes();
-      refetchTokenBalance();
+      setIsTransactionPending(true);
+      // Wait for transaction confirmation
+      publicClient?.waitForTransactionReceipt({ hash: data.hash })
+        .then(() => {
+          setTxStatus('success');
+          setIsTransactionPending(false);
+          refetchStakes();
+          refetchTokenBalance();
+        })
+        .catch((error: Error) => {
+          console.error('Transaction failed:', error);
+          setTxStatus('error');
+          setIsTransactionPending(false);
+        });
     },
     onError: (error) => {
       console.error('Stake error:', error);
       setTxStatus('error');
+      setIsTransactionPending(false);
     },
   });
 
   // Update the contract write configs
   const { config: withdrawConfig } = usePrepareContractWrite({
-    address: STAKING_CONTRACT_ADDRESS as `0x${string}`,
+    address: STAKING_CONTRACT_ADDRESS,
     abi: stakingABI,
     functionName: 'withdraw',
     args: [BigInt(activeWithdrawal?.type === 'normal' ? activeWithdrawal.index : 0)],
@@ -198,7 +258,7 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
   });
 
   const { config: emergencyWithdrawConfig } = usePrepareContractWrite({
-    address: STAKING_CONTRACT_ADDRESS as `0x${string}`,
+    address: STAKING_CONTRACT_ADDRESS,
     abi: stakingABI,
     functionName: 'emergencyWithdraw',
     args: [BigInt(activeWithdrawal?.type === 'emergency' ? activeWithdrawal.index : 0)],
@@ -271,9 +331,9 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
       return;
     }
 
-    const stake = userStakes?.[stakeIndex];
+    const stake = userStakes?.[stakeIndex] as Stake | undefined;
     if (!stake) {
-      console.error('Invalid stake for emergency withdrawal:', { stakeIndex, exists: !!stake, active: stake?.active });
+      console.error('Invalid stake for emergency withdrawal:', { stakeIndex, exists: false });
       return;
     }
 
@@ -292,14 +352,14 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
   };
 
   // Add function to check if a stake is ready for withdrawal
-  const isStakeReadyForWithdrawal = (stake: any) => {
+  const isStakeReadyForWithdrawal = (stake: Stake | undefined) => {
     if (!stake || !stake.active) return false;
     const endTime = Number(stake.endTime) * 1000;
     return endTime <= Date.now();
   };
 
   // Add function to get stake status
-  const getStakeStatus = (stake: any) => {
+  const getStakeStatus = (stake: Stake | undefined) => {
     if (!stake) return 'Unknown';
     if (!stake.active) return 'Withdrawn';
     const endTime = Number(stake.endTime) * 1000;
@@ -308,7 +368,7 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
   };
 
   // Add function to get stake reward
-  const getStakeReward = (stake: any) => {
+  const getStakeReward = (stake: Stake | undefined) => {
     if (!stake) return BigInt(0);
     const rewardMultiplier = getRewardMultiplier(stake.lockPeriod);
     const reward = (stake.amount * BigInt(Math.floor((rewardMultiplier - 1) * 1e18))) / BigInt(1e18);
@@ -316,7 +376,7 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
   };
 
   // Add function to calculate total amount with rewards
-  const calculateStakeTotal = (stake: any) => {
+  const calculateStakeTotal = (stake: Stake | undefined) => {
     if (!stake) return { originalAmount: 0, rewardAmount: 0, totalAmount: 0 };
     
     const originalAmount = Number(formatEther(stake.amount));
@@ -399,7 +459,7 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
         hasAmount: !!amountInWei,
         hasLockPeriod: lockPeriodNum !== undefined,
         validAmount: Number(amount) > 0,
-        hasEnoughAllowance: allowance >= (amountInWei || BigInt(0)),
+        hasEnoughAllowance: (allowance || BigInt(0)) >= (amountInWei || BigInt(0)),
         stakeConfig: !!stakeConfig
       });
       return;
@@ -453,12 +513,17 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
 
   // Add contract event listener for WithdrawDebug
   useContractEvent({
-    address: STAKING_CONTRACT_ADDRESS as `0x${string}`,
+    address: STAKING_CONTRACT_ADDRESS,
     abi: stakingABI,
     eventName: 'WithdrawDebug',
     listener: (logs) => {
       logs.forEach((log) => {
         const { user, stakeId, stakeAmount, rewardMultiplier, calculatedReward, totalPayout, contractBalance } = log.args;
+        if (!stakeId || !stakeAmount || !rewardMultiplier || !calculatedReward || !totalPayout || !contractBalance) {
+          console.error('Missing event data:', log.args);
+          return;
+        }
+        
         console.log('Withdraw Debug Event:', {
           user,
           stakeId: stakeId.toString(),
@@ -490,8 +555,8 @@ export function useStaking({ amount, lockPeriod }: UseStakingProps = {}) {
     emergencyWithdrawStake,
     calculateStakeTotal,
     checkContractBalance,
-    isApproving,
-    isStaking,
+    isApproving: isApproving || isTransactionPending,
+    isStaking: isStaking || isTransactionPending,
     isWithdrawing,
     isEmergencyWithdrawing,
     withdrawingIndex,

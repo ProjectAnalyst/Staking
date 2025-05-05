@@ -25,6 +25,7 @@ contract MiniStaking is ReentrancyGuard, Ownable {
 
     IERC20 public immutable rewardToken;
     address public treasuryWallet;
+    bool public paused;
 
     struct Stake {
         uint128 amount;
@@ -52,13 +53,36 @@ contract MiniStaking is ReentrancyGuard, Ownable {
         uint256 totalPayout,
         uint256 contractBalance
     );
+    event Paused(address indexed account);
+    event Unpaused(address indexed account);
 
     constructor(address _token, address _treasuryWallet) Ownable(msg.sender) {
         rewardToken = IERC20(_token);
         treasuryWallet = _treasuryWallet;
+        paused = false;
     }
 
-    function stake(uint256 amount, LockPeriod period) external nonReentrant {
+    modifier whenNotPaused() {
+        require(!paused, "Contract is paused");
+        _;
+    }
+
+    modifier whenPaused() {
+        require(paused, "Contract is not paused");
+        _;
+    }
+
+    function pause() external onlyOwner whenNotPaused {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    function unpause() external onlyOwner whenPaused {
+        paused = false;
+        emit Unpaused(msg.sender);
+    }
+
+    function stake(uint256 amount, LockPeriod period) external nonReentrant whenNotPaused {
         require(amount > 0, "Cannot stake 0");
         require(uint8(period) < lockPeriods.length, "Invalid lock period");
 
@@ -79,7 +103,12 @@ contract MiniStaking is ReentrancyGuard, Ownable {
         emit Staked(msg.sender, userStakes[msg.sender].length - 1, amount);
     }
 
-    function withdraw(uint256 stakeIndex) external nonReentrant {
+    function getTreasuryAllowance() external view returns (uint256) {
+        return rewardToken.allowance(treasuryWallet, address(this));
+    }
+
+    function withdraw(uint256 stakeIndex) external nonReentrant whenNotPaused {
+        require(stakeIndex < userStakes[msg.sender].length, "Invalid stake index");
         Stake storage s = userStakes[msg.sender][stakeIndex];
         require(s.active, "Stake inactive");
         require(block.timestamp >= s.endTime, "Lock period not over");
@@ -88,7 +117,7 @@ contract MiniStaking is ReentrancyGuard, Ownable {
         uint256 reward = (uint256(s.amount) * (s.rewardMultiplier - MULTIPLIER_BASE)) / MULTIPLIER_BASE;
         uint256 totalPayout = uint256(s.amount) + reward;
         
-        // Emit debug information before the balance check
+        // Emit debug information
         emit WithdrawDebug(
             msg.sender,
             stakeIndex,
@@ -99,21 +128,31 @@ contract MiniStaking is ReentrancyGuard, Ownable {
             rewardToken.balanceOf(address(this))
         );
 
-        require(rewardToken.balanceOf(address(this)) >= totalPayout, "Insufficient contract balance");
-
         s.active = false;
         totalDistributed += reward;
 
-        rewardToken.safeTransfer(msg.sender, totalPayout);
+        // Always transfer staked amount back to user
+        rewardToken.safeTransfer(msg.sender, uint256(s.amount));
+        
+        // Check if treasury has enough allowance and balance
+        uint256 treasuryAllowance = rewardToken.allowance(treasuryWallet, address(this));
+        uint256 treasuryBalance = rewardToken.balanceOf(treasuryWallet);
+        
+        // Only transfer reward if treasury has enough tokens and allowance
+        if (treasuryAllowance >= reward && treasuryBalance >= reward) {
+            rewardToken.safeTransferFrom(treasuryWallet, msg.sender, reward);
+        }
+        
         emit Withdrawn(msg.sender, stakeIndex, reward);
     }
 
-    function emergencyWithdraw(uint256 stakeIndex) external nonReentrant {
+    function emergencyWithdraw(uint256 stakeIndex) external nonReentrant whenNotPaused {
+        require(stakeIndex < userStakes[msg.sender].length, "Invalid stake index");
         Stake storage s = userStakes[msg.sender][stakeIndex];
         require(s.active, "Stake inactive");
 
         uint256 penalty = (uint256(s.amount) * 3000) / BP_DENOMINATOR; // 30%
-        uint256 payout = s.amount - penalty;
+        uint256 payout = uint256(s.amount) - penalty;
 
         s.active = false;
         rewardToken.safeTransfer(treasuryWallet, penalty);
@@ -127,6 +166,7 @@ contract MiniStaking is ReentrancyGuard, Ownable {
     }
 
     function setTreasuryWallet(address newWallet) external onlyOwner {
+        require(newWallet != address(0), "Invalid treasury address");
         treasuryWallet = newWallet;
     }
 } 

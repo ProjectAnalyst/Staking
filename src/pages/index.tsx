@@ -15,6 +15,26 @@ if (!STAKING_CONTRACT_ADDRESS) {
   throw new Error('NEXT_PUBLIC_STAKING_CONTRACT_ADDRESS is not set in environment variables');
 }
 
+// Update the Stake type to match the contract's type
+type Stake = {
+  amount: bigint;
+  startTime: number;
+  endTime: number;
+  lockPeriod: number;
+  rewardMultiplier: bigint;
+  active: boolean;
+};
+
+// Add a helper function to convert contract stake to frontend stake
+const convertToFrontendStake = (stake: any): Stake => ({
+  amount: BigInt(stake.amount),
+  startTime: Number(stake.startTime),
+  endTime: Number(stake.endTime),
+  lockPeriod: Number(stake.lockPeriod),
+  rewardMultiplier: BigInt(stake.rewardMultiplier),
+  active: Boolean(stake.active)
+});
+
 export default function Home() {
   const { address, isConnecting } = useAccount();
   const [amount, setAmount] = useState('');
@@ -74,9 +94,9 @@ export default function Home() {
       setError(null);
       await approveTokens();
       console.log('Approval transaction sent');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Approval failed:', error);
-      if (error.message.includes('user rejected')) {
+      if (error.message?.includes('user rejected')) {
         setError('Transaction was rejected by MetaMask. Please try again.');
       } else {
         setError('Approval failed. Please try again.');
@@ -96,14 +116,19 @@ export default function Home() {
       setError('Please enter a valid amount greater than 0');
       return;
     }
+    if (tokenBalance !== undefined && amountInWei > tokenBalance) {
+      console.error('Insufficient balance:', { amountInWei, tokenBalance });
+      setError('Insufficient token balance. Please check your wallet balance.');
+      return;
+    }
     try {
       console.log('Attempting to stake:', { amount, lockPeriod });
       setError(null);
       await stakeTokens();
       console.log('Stake transaction sent');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Staking failed:', error);
-      if (error.message.includes('user rejected')) {
+      if (error.message?.includes('user rejected')) {
         setError('Transaction was rejected by MetaMask. Please try again.');
       } else {
         setError('Staking failed. Please make sure you have enough tokens and have approved the contract.');
@@ -124,32 +149,25 @@ export default function Home() {
       await emergencyWithdrawStake(emergencyWithdrawStakeIndex);
       setIsEmergencyDialogOpen(false);
       setEmergencyWithdrawStakeIndex(null);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Emergency withdrawal failed:', error);
-      setEmergencyWithdrawError(error.message || 'Emergency withdrawal failed. Please try again.');
+      setEmergencyWithdrawError(
+        error instanceof Error 
+          ? error.message 
+          : 'Emergency withdrawal failed. Please try again.'
+      );
     }
   };
 
   const renderUserStakes = () => {
-    if (!userStakes || userStakes.length === 0) {
-      return (
-        <div className="text-center py-12">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-100 flex items-center justify-center">
-            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <p className="text-gray-500">No stakes found</p>
-        </div>
-      );
-    }
+    if (!userStakes) return null;
 
     const activeStakes = userStakes
-      .map((stake, index) => ({ stake, originalIndex: index }))
+      .map((stake, index) => ({ stake: convertToFrontendStake(stake), originalIndex: index }))
       .filter(({ stake }) => stake.active);
 
     const completedStakes = userStakes
-      .map((stake, index) => ({ stake, originalIndex: index }))
+      .map((stake, index) => ({ stake: convertToFrontendStake(stake), originalIndex: index }))
       .filter(({ stake }) => !stake.active);
 
     return (
@@ -177,7 +195,7 @@ export default function Home() {
                   isEmergencyWithdrawing={emergencyWithdrawingIndex === originalIndex}
                   isReadyForWithdrawal={isStakeReadyForWithdrawal(stake)}
                   status={getStakeStatus(stake)}
-                  reward={Math.round(Number(formatEther(getStakeReward(stake)))).toString()}
+                  reward={formatEther(getStakeReward(stake))}
                 />
               ))}
             </div>
@@ -221,7 +239,7 @@ export default function Home() {
                     isEmergencyWithdrawing={emergencyWithdrawingIndex === originalIndex}
                     isReadyForWithdrawal={isStakeReadyForWithdrawal(stake)}
                     status={getStakeStatus(stake)}
-                    reward={Math.round(Number(formatEther(getStakeReward(stake)))).toString()}
+                    reward={formatEther(getStakeReward(stake))}
                   />
                 ))}
               </div>
@@ -295,7 +313,7 @@ export default function Home() {
               )}
 
               <div className="flex space-x-4">
-                {allowance < amountInWei ? (
+                {allowance !== undefined && allowance < amountInWei ? (
                   <button
                     onClick={handleApprove}
                     disabled={isApproving}
@@ -344,16 +362,22 @@ export default function Home() {
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
                   <span className="text-gray-400">Token Balance</span>
-                  <span className="font-medium text-white">{tokenBalance} MINI</span>
+                  <span className="font-medium text-white">
+                    {tokenBalance !== undefined ? Math.round(Number(formatEther(tokenBalance))) : 0} MINI
+                  </span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-400">Total Staked</span>
-                  <span className="font-medium text-white">{totalStaked} MINI</span>
+                  <span className="font-medium text-white">
+                    {totalStaked !== undefined ? Math.round(Number(formatEther(totalStaked))) : 0} MINI
+                  </span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-400">Contract Balance</span>
                   <span className="font-medium text-white">
-                    {checkContractBalance()?.contractBalance ? Math.round(Number(formatEther(checkContractBalance().contractBalance))) : 0} MINI
+                    {checkContractBalance?.()?.contractBalance !== undefined 
+                      ? Math.round(Number(formatEther(checkContractBalance()?.contractBalance ?? BigInt(0)))) 
+                      : 0} MINI
                   </span>
                 </div>
               </div>
@@ -375,7 +399,7 @@ export default function Home() {
         )}
       </div>
 
-      {isEmergencyDialogOpen && emergencyWithdrawStakeIndex !== null && (
+      {isEmergencyDialogOpen && (
         <EmergencyWithdrawDialog
           isOpen={isEmergencyDialogOpen}
           onClose={() => {
@@ -384,9 +408,9 @@ export default function Home() {
             setEmergencyWithdrawError(null);
           }}
           onConfirm={confirmEmergencyWithdraw}
-          stakeAmount={Number(formatEther(userStakes[emergencyWithdrawStakeIndex].amount))}
+          stakeAmount={Number(formatEther(userStakes?.[emergencyWithdrawStakeIndex ?? 0]?.amount ?? BigInt(0)))}
           isLoading={isEmergencyWithdrawing}
-          error={emergencyWithdrawError}
+          error={emergencyWithdrawError ?? undefined}
         />
       )}
     </div>
